@@ -86,13 +86,15 @@ def find_tartarus_devices():
         has_arrows   = ecodes.KEY_UP     in keys
         has_leftalt  = ecodes.KEY_LEFTALT in keys
         has_q        = ecodes.KEY_Q      in keys
+        has_leds = bool(caps.get(ecodes.EV_LED, []))
+        has_abs = bool(caps.get(ecodes.EV_ABS, []))
 
-        if has_middle and has_wheel:
+        if has_middle and has_wheel and not has_q:
             mouse_dev = dev
-        elif has_arrows and has_leftalt and not has_q:
-            analog_dev = dev
-        elif has_space and has_q:
+        elif has_space and has_q and has_abs and has_wheel:
             keys_dev = dev
+        elif has_space and has_q and not has_abs:
+            analog_dev = dev
         else:
             dev.close()
 
@@ -282,6 +284,10 @@ class DaemonThread(QThread):
         for dev in [keys_dev, mouse_dev, analog_dev]:
             if dev:
                 try:
+                    # Reopen fresh to avoid stale file descriptor
+                    saved_path = dev.path
+                    dev.close()
+                    dev = InputDevice(saved_path)
                     dev.grab()
                     self.devices.append(dev)
                     self.sel.register(dev, selectors.EVENT_READ)

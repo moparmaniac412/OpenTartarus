@@ -30,47 +30,111 @@ except ImportError:
     OPENRAZER_AVAILABLE = False
 
 # ── Config paths ───────────────────────────────────────────────
-CONFIG_FILE         = "/home/sasquatch/.tartarus_profiles.json"
-ACTIVE_PROFILE_FILE = "/home/sasquatch/.tartarus_active_profile"
+CONFIG_FILE         = os.path.expanduser("~/.tartarus_profiles.json")
+ACTIVE_PROFILE_FILE = os.path.expanduser("~/.tartarus_active_profile")
 AUTOSTART_DIR       = os.path.expanduser("~/.config/autostart")
-AUTOSTART_FILE      = os.path.join(AUTOSTART_DIR, "tartarus.desktop")
-INSTALL_PATH        = os.path.expanduser("~/tartarus.py")
+AUTOSTART_FILE      = os.path.join(AUTOSTART_DIR, "opentartarus.desktop")
+INSTALL_PATH        = os.path.expanduser("~/.opentartarus/opentartarus.py")
 
-# ── Device paths ───────────────────────────────────────────────
-DEVICE_PATHS = [
-    "/dev/input/event5",
-    "/dev/input/event19",
-    "/dev/input/event21",
-]
+# ── Razer Tartarus Pro USB identifiers ────────────────────────
+TARTARUS_VENDOR_ID  = 0x1532
+TARTARUS_PRODUCT_ID = 0x0244
 
-# ── Key map: (device, evdev_code) -> tartarus key id ──────────
-TARTARUS_KEY_MAP = {
-    ("/dev/input/event19", "KEY_1"):        "01",
-    ("/dev/input/event19", "KEY_2"):        "02",
-    ("/dev/input/event19", "KEY_3"):        "03",
-    ("/dev/input/event19", "KEY_4"):        "04",
-    ("/dev/input/event19", "KEY_5"):        "05",
-    ("/dev/input/event19", "KEY_TAB"):      "06",
-    ("/dev/input/event19", "KEY_Q"):        "07",
-    ("/dev/input/event19", "KEY_W"):        "08",
-    ("/dev/input/event19", "KEY_E"):        "09",
-    ("/dev/input/event19", "KEY_R"):        "10",
-    ("/dev/input/event19", "KEY_CAPSLOCK"): "11",
-    ("/dev/input/event19", "KEY_A"):        "12",
-    ("/dev/input/event19", "KEY_S"):        "13",
-    ("/dev/input/event19", "KEY_D"):        "14",
-    ("/dev/input/event19", "KEY_F"):        "15",
-    ("/dev/input/event19", "KEY_LEFTSHIFT"):"16",
-    ("/dev/input/event19", "KEY_Z"):        "17",
-    ("/dev/input/event19", "KEY_X"):        "18",
-    ("/dev/input/event19", "KEY_C"):        "19",
-    ("/dev/input/event19", "KEY_SPACE"):    "20",
-    ("/dev/input/event5",  "KEY_LEFTALT"):  "btn",
-    ("/dev/input/event21", "BTN_MIDDLE"):   "scroll",
-    ("/dev/input/event5",  "KEY_UP"):       "analog_up",
-    ("/dev/input/event5",  "KEY_DOWN"):     "analog_down",
-    ("/dev/input/event5",  "KEY_LEFT"):     "analog_left",
-    ("/dev/input/event5",  "KEY_RIGHT"):    "analog_right",
+# ── Key signatures used to identify each sub-device ──────────
+# The Tartarus Pro exposes 3 evdev devices:
+#   KEYS device   — has KEY_Q, KEY_W, KEY_SPACE etc (main keypad)
+#   MOUSE device  — has BTN_MIDDLE, REL_WHEEL (scroll wheel)
+#   ANALOG device — has KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT (stick)
+#
+# We identify them by their capabilities rather than path numbers
+# so reboots and USB reconnects don't break anything.
+
+def find_tartarus_devices():
+    """
+    Dynamically find the three Tartarus Pro evdev devices by USB ID
+    and capability fingerprint. Returns (keys_path, mouse_path, analog_path)
+    or raises RuntimeError if not found.
+    """
+    import evdev as _evdev
+    candidates = []
+    for path in _evdev.list_devices():
+        try:
+            dev = _evdev.InputDevice(path)
+            info = dev.info
+            if info.vendor == TARTARUS_VENDOR_ID and info.product == TARTARUS_PRODUCT_ID:
+                candidates.append(dev)
+            else:
+                dev.close()
+        except Exception:
+            pass
+
+    if not candidates:
+        raise RuntimeError("Razer Tartarus Pro not found. Is it plugged in?")
+
+    keys_dev   = None
+    mouse_dev  = None
+    analog_dev = None
+
+    for dev in candidates:
+        caps = dev.capabilities()
+        keys = caps.get(ecodes.EV_KEY, [])
+        rels = caps.get(ecodes.EV_REL, [])
+
+        has_space    = ecodes.KEY_SPACE  in keys
+        has_middle   = ecodes.BTN_MIDDLE in keys
+        has_wheel    = ecodes.REL_WHEEL  in rels
+        has_arrows   = ecodes.KEY_UP     in keys
+        has_leftalt  = ecodes.KEY_LEFTALT in keys
+        has_q        = ecodes.KEY_Q      in keys
+
+        if has_middle and has_wheel:
+            mouse_dev = dev
+        elif has_arrows and has_leftalt and not has_q:
+            analog_dev = dev
+        elif has_space and has_q:
+            keys_dev = dev
+        else:
+            dev.close()
+
+    missing = []
+    if not keys_dev:   missing.append("keys")
+    if not mouse_dev:  missing.append("mouse/scroll")
+    if not analog_dev: missing.append("analog stick")
+
+    if missing:
+        # Fallback: assign remaining candidates in order
+        remaining = [d for d in candidates if d not in (keys_dev, mouse_dev, analog_dev)]
+        if not keys_dev and remaining:   keys_dev   = remaining.pop(0)
+        if not mouse_dev and remaining:  mouse_dev  = remaining.pop(0)
+        if not analog_dev and remaining: analog_dev = remaining.pop(0)
+
+    return keys_dev, mouse_dev, analog_dev
+
+
+# ── Key map: built dynamically after device detection ─────────
+# Maps (device_path, keycode) -> tartarus key id
+# Populated in DaemonThread.setup_devices()
+TARTARUS_KEY_MAP = {}
+
+# Static key->id mapping by device role (filled after detection)
+KEYS_DEVICE_MAP = {
+    "KEY_1":        "01", "KEY_2":        "02", "KEY_3":        "03",
+    "KEY_4":        "04", "KEY_5":        "05", "KEY_TAB":      "06",
+    "KEY_Q":        "07", "KEY_W":        "08", "KEY_E":        "09",
+    "KEY_R":        "10", "KEY_CAPSLOCK": "11", "KEY_A":        "12",
+    "KEY_S":        "13", "KEY_D":        "14", "KEY_F":        "15",
+    "KEY_LEFTSHIFT":"16", "KEY_Z":        "17", "KEY_X":        "18",
+    "KEY_C":        "19", "KEY_SPACE":    "20",
+}
+MOUSE_DEVICE_MAP = {
+    "BTN_MIDDLE": "scroll",
+}
+ANALOG_DEVICE_MAP = {
+    "KEY_LEFTALT": "btn",
+    "KEY_UP":      "analog_up",
+    "KEY_DOWN":    "analog_down",
+    "KEY_LEFT":    "analog_left",
+    "KEY_RIGHT":   "analog_right",
 }
 
 # ── Key name -> evdev code ─────────────────────────────────────
@@ -191,15 +255,39 @@ class DaemonThread(QThread):
         self.status_changed.emit("uinput ready")
 
     def setup_devices(self):
-        for path in DEVICE_PATHS:
-            try:
-                dev = InputDevice(path)
-                dev.grab()
-                self.devices.append(dev)
-                self.sel.register(dev, selectors.EVENT_READ)
-                self.status_changed.emit(f"Grabbed {path}")
-            except Exception as e:
-                self.status_changed.emit(f"Could not grab {path}: {e}")
+        global TARTARUS_KEY_MAP
+        try:
+            keys_dev, mouse_dev, analog_dev = find_tartarus_devices()
+        except RuntimeError as e:
+            self.status_changed.emit(str(e))
+            return
+
+        TARTARUS_KEY_MAP = {}
+
+        if keys_dev:
+            for keycode, tid in KEYS_DEVICE_MAP.items():
+                TARTARUS_KEY_MAP[(keys_dev.path, keycode)] = tid
+            self.status_changed.emit(f"Keys device: {keys_dev.path}")
+
+        if mouse_dev:
+            for keycode, tid in MOUSE_DEVICE_MAP.items():
+                TARTARUS_KEY_MAP[(mouse_dev.path, keycode)] = tid
+            self.status_changed.emit(f"Mouse device: {mouse_dev.path}")
+
+        if analog_dev:
+            for keycode, tid in ANALOG_DEVICE_MAP.items():
+                TARTARUS_KEY_MAP[(analog_dev.path, keycode)] = tid
+            self.status_changed.emit(f"Analog device: {analog_dev.path}")
+
+        for dev in [keys_dev, mouse_dev, analog_dev]:
+            if dev:
+                try:
+                    dev.grab()
+                    self.devices.append(dev)
+                    self.sel.register(dev, selectors.EVENT_READ)
+                    self.status_changed.emit(f"Grabbed {dev.path} ({dev.name})")
+                except Exception as e:
+                    self.status_changed.emit(f"Could not grab {dev.path}: {e}")
 
     def reload_mapping(self):
         try:

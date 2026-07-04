@@ -34,6 +34,26 @@ A Synapse-like manager for the Razer Tartarus Pro and Tartarus V2 on Linux. Runs
 
 ## Installation
 
+### Option A — Packaged install (recommended)
+
+Download the package for your distro from the [`packaging/`](packaging/) folder, then:
+
+**Fedora / Nobara (.rpm):**
+```bash
+git clone https://github.com/moparmaniac412/OpenTartarus.git
+cd OpenTartarus
+sudo dnf install ./packaging/opentartarus-0.2.0-1.noarch.rpm
+```
+
+Then add yourself to the `input` group and log out/in:
+```bash
+sudo usermod -aG input $USER
+```
+
+Launch it from your application menu, or run `opentartarus` from a terminal.
+
+### Option B — Install script (from source)
+
 ```bash
 git clone https://github.com/moparmaniac412/OpenTartarus.git
 cd OpenTartarus
@@ -92,6 +112,11 @@ cp opentartarus.py ~/.opentartarus/opentartarus.py
 python3 ~/.opentartarus/opentartarus.py
 ```
 
+If you installed via `.rpm`, update by reinstalling the new package instead:
+```bash
+sudo dnf install ./packaging/opentartarus-0.2.0-1.noarch.rpm
+```
+
 ---
 
 ## Known Issues
@@ -143,6 +168,9 @@ Make sure OpenTartarus is fully quit (not just window-closed) before restarting 
 **Modifier combos not working in some apps:**
 Some KDE shortcuts intercept `Ctrl+F` keys at the compositor level. See Known Issues above.
 
+**RPM install fails with a dependency error:**
+Make sure your system has `python3-pyqt6` and `python3-evdev` available (Nobara/Fedora repos include these by default).
+
 ---
 
 ## Contributing
@@ -157,4 +185,4 @@ MIT — free to use, modify, and share.
 
 ---
 
-*Built with ❤️ on Linux by [Moparmaniac412](https://github.com/Moparmaniac412) — with AI assistance from Claude (Anthropic). See project history for details.*
+*Built with ❤️ on Linux by [Moparmaniac412](https://github.com/Moparmaniac412) — with AI assistance from Claude (Anthropic).*

@@ -1,6 +1,6 @@
 # OpenTartarus
 
-A Synapse-like manager for the Razer Tartarus Pro on Linux. Runs as a system tray app, remaps keys, controls RGB lighting, and manages profiles — no Windows or Razer Synapse required.
+A Synapse-like manager for the Razer Tartarus Pro and Tartarus V2 on Linux. Runs as a system tray app, remaps keys, controls RGB lighting, and manages profiles — no Windows or Razer Synapse required.
 
 ![Platform](https://img.shields.io/badge/platform-Linux-blue)
 ![Python](https://img.shields.io/badge/python-3.8+-green)
@@ -19,6 +19,7 @@ A Synapse-like manager for the Razer Tartarus Pro on Linux. Runs as a system tra
 - 👤 Multiple profiles with instant switching from the system tray
 - 🚀 Launches automatically on login
 - 🖥️ System tray app — runs silently in the background
+- 🔌 Dynamic device detection — works reliably across reboots and USB replugs, no manual configuration needed
 
 ---
 
@@ -26,7 +27,7 @@ A Synapse-like manager for the Razer Tartarus Pro on Linux. Runs as a system tra
 
 - Linux (tested on Nobara/Fedora — should work on Ubuntu/Debian)
 - Python 3.8+
-- Razer Tartarus Pro (other Tartarus models may work)
+- Razer Tartarus Pro or Tartarus V2
 - [OpenRazer](https://openrazer.github.io/) (installed automatically)
 
 ---
@@ -34,8 +35,9 @@ A Synapse-like manager for the Razer Tartarus Pro on Linux. Runs as a system tra
 ## Installation
 
 ```bash
-git clone https://github.com/Moparmaniac412/OpenTartarus.git
+git clone https://github.com/moparmaniac412/OpenTartarus.git
 cd OpenTartarus
+chmod +x install.sh
 ./install.sh
 ```
 
@@ -46,8 +48,6 @@ After logging back in, OpenTartarus will start automatically and appear in your 
 ---
 
 ## Usage
-I use this primarily for World Of Warcraft. I just wanted something that would work. I'm not a coder, I have a general IT knowledge. The coding was built primarily by ClaudeAI. If anyone sees this out there and has any improvements, that would be awesome. I feel like the Tartarus is one of those niche gaming devices that work well with MMORPGs. Thank you all <3
----
 
 ### System tray
 - **Left-click** the tray icon to open the manager
@@ -78,6 +78,22 @@ Assign Shift or Ctrl to a key. When held, any other key pressed will fire as a c
 
 ---
 
+## Updating
+
+If you pull a newer version from GitHub, make sure OpenTartarus is **fully quit** before replacing the file — closing the window only hides it to the tray, it doesn't stop the background daemon. If you overwrite the file while the old process is still running, your changes won't take effect until you actually restart it.
+
+```bash
+# Fully quit first: right-click tray icon → Quit
+# or:
+pkill -f opentartarus.py
+
+# then replace the file and relaunch
+cp opentartarus.py ~/.opentartarus/opentartarus.py
+python3 ~/.opentartarus/opentartarus.py
+```
+
+---
+
 ## Known Issues
 
 Some `Ctrl+F` key combos may be intercepted by KDE before reaching your game (e.g. `Ctrl+F1`–`Ctrl+F4` switch virtual desktops). To fix, go to:
@@ -91,8 +107,8 @@ Some `Ctrl+F` key combos may be intercepted by KDE before reaching your game (e.
 | Device | Status |
 |--------|--------|
 | Razer Tartarus Pro | ✅ Fully working |
-| Razer Tartarus V2 | ❓ Untested (likely works) |
-| Razer Tartarus | ❓ Untested (likely works) |
+| Razer Tartarus V2 | ✅ Fully working |
+| Razer Tartarus (original) | ❓ Untested (likely works) |
 
 ---
 
@@ -103,6 +119,8 @@ OpenTartarus uses:
 - **uinput** to emit remapped keypresses as a virtual keyboard
 - **OpenRazer** for RGB lighting control
 - **PyQt6** for the GUI and system tray
+
+Devices are detected dynamically by USB vendor/product ID and capability fingerprint (rather than hardcoded event paths), so the app keeps working correctly even after reboots or USB replugs shuffle the device numbering.
 
 The remap daemon runs as a background thread inside the tray app. When a key is pressed, it looks up the mapping for the active profile and fires the correct keypress — including held modifiers for combos.
 
@@ -119,8 +137,8 @@ systemctl --user start openrazer-daemon
 ```
 Then restart OpenTartarus.
 
-**Keys not remapping:**
-Check group membership: `groups $USER` — should include `input` and `plugdev`.
+**Keys not remapping, or remapping to the wrong thing:**
+Make sure OpenTartarus is fully quit (not just window-closed) before restarting — see [Updating](#updating) above. Also check group membership: `groups $USER` should include `input` and `plugdev`.
 
 **Modifier combos not working in some apps:**
 Some KDE shortcuts intercept `Ctrl+F` keys at the compositor level. See Known Issues above.
@@ -129,7 +147,7 @@ Some KDE shortcuts intercept `Ctrl+F` keys at the compositor level. See Known Is
 
 ## Contributing
 
-Pull requests welcome! If you test on a Tartarus V2 or original Tartarus, please open an issue with your results.
+Pull requests welcome! If you test on the original (non-V2, non-Pro) Tartarus, please open an issue with your results.
 
 ---
 
@@ -139,4 +157,4 @@ MIT — free to use, modify, and share.
 
 ---
 
-*Built with ❤️ on Linux by [Moparmaniac412](https://github.com/Moparmaniac412)*
+*Built with ❤️ on Linux by [Moparmaniac412](https://github.com/Moparmaniac412) — with AI assistance from Claude (Anthropic). See project history for details.*

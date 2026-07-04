@@ -75,6 +75,8 @@ echo -e "${YELLOW}[3/6] Setting up device permissions...${NC}"
 sudo tee $UDEV_RULE > /dev/null << UDEV
 # OpenTartarus - Razer Tartarus Pro
 SUBSYSTEM=="input", ATTRS{idVendor}=="1532", ATTRS{idProduct}=="0244", MODE="0660", GROUP="input"
+SUBSYSTEM=="input", ATTRS{idVendor}=="1532", ATTRS{idProduct}=="022b", MODE="0660", GROUP="input"
+SUBSYSTEM=="input", ATTRS{idVendor}=="1532", ATTRS{idProduct}=="022c", MODE="0660", GROUP="input"
 UDEV
 
 sudo udevadm control --reload-rules

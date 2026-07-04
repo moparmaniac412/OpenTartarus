@@ -37,8 +37,12 @@ AUTOSTART_FILE      = os.path.join(AUTOSTART_DIR, "opentartarus.desktop")
 INSTALL_PATH        = os.path.expanduser("~/.opentartarus/opentartarus.py")
 
 # ── Razer Tartarus Pro USB identifiers ────────────────────────
-TARTARUS_VENDOR_ID  = 0x1532
-TARTARUS_PRODUCT_ID = 0x0244
+TARTARUS_VENDOR_ID = 0x1532
+TARTARUS_PRODUCT_IDS = {
+    0x0244,  # Tartarus Pro
+    0x022B,  # Tartarus V2
+    0x022C,  # Tartarus V2 (variant)
+}
 
 # ── Key signatures used to identify each sub-device ──────────
 # The Tartarus Pro exposes 3 evdev devices:
@@ -61,7 +65,7 @@ def find_tartarus_devices():
         try:
             dev = _evdev.InputDevice(path)
             info = dev.info
-            if info.vendor == TARTARUS_VENDOR_ID and info.product == TARTARUS_PRODUCT_ID:
+            if info.vendor == TARTARUS_VENDOR_ID and info.product in TARTARUS_PRODUCT_IDS:
                 candidates.append(dev)
             else:
                 dev.close()

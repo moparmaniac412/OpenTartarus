@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QComboBox, QGroupBox, QGridLayout,
     QSlider, QColorDialog, QTabWidget, QMessageBox, QInputDialog,
-    QSystemTrayIcon, QMenu
+    QSystemTrayIcon, QMenu, QStackedWidget
 )
 from PyQt6.QtCore import Qt, QObject, QEvent, pyqtSignal, QThread
 from PyQt6.QtGui import QColor, QIcon, QPixmap, QPainter
@@ -36,7 +36,7 @@ AUTOSTART_DIR       = os.path.expanduser("~/.config/autostart")
 AUTOSTART_FILE      = os.path.join(AUTOSTART_DIR, "opentartarus.desktop")
 INSTALL_PATH        = os.path.expanduser("~/.opentartarus/opentartarus.py")
 
-# ── Razer Tartarus Pro USB identifiers ────────────────────────
+# ── Razer Tartarus Pro / V2 USB identifiers ───────────────────
 TARTARUS_VENDOR_ID = 0x1532
 TARTARUS_PRODUCT_IDS = {
     0x0244,  # Tartarus Pro
@@ -45,18 +45,10 @@ TARTARUS_PRODUCT_IDS = {
 }
 
 # ── Key signatures used to identify each sub-device ──────────
-# The Tartarus Pro exposes 3 evdev devices:
-#   KEYS device   — has KEY_Q, KEY_W, KEY_SPACE etc (main keypad)
-#   MOUSE device  — has BTN_MIDDLE, REL_WHEEL (scroll wheel)
-#   ANALOG device — has KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT (stick)
-#
-# We identify them by their capabilities rather than path numbers
-# so reboots and USB reconnects don't break anything.
-
 def find_tartarus_devices():
     """
-    Dynamically find the three Tartarus Pro evdev devices by USB ID
-    and capability fingerprint. Returns (keys_path, mouse_path, analog_path)
+    Dynamically find the three Tartarus evdev devices by USB ID
+    and capability fingerprint. Returns (keys_dev, mouse_dev, analog_dev)
     or raises RuntimeError if not found.
     """
     import evdev as _evdev
@@ -73,7 +65,7 @@ def find_tartarus_devices():
             pass
 
     if not candidates:
-        raise RuntimeError("Razer Tartarus Pro not found. Is it plugged in?")
+        raise RuntimeError("Razer Tartarus not found. Is it plugged in?")
 
     keys_dev   = None
     mouse_dev  = None
@@ -87,10 +79,7 @@ def find_tartarus_devices():
         has_space    = ecodes.KEY_SPACE  in keys
         has_middle   = ecodes.BTN_MIDDLE in keys
         has_wheel    = ecodes.REL_WHEEL  in rels
-        has_arrows   = ecodes.KEY_UP     in keys
-        has_leftalt  = ecodes.KEY_LEFTALT in keys
         has_q        = ecodes.KEY_Q      in keys
-        has_leds = bool(caps.get(ecodes.EV_LED, []))
         has_abs = bool(caps.get(ecodes.EV_ABS, []))
 
         if has_middle and has_wheel and not has_q:
@@ -108,7 +97,6 @@ def find_tartarus_devices():
     if not analog_dev: missing.append("analog stick")
 
     if missing:
-        # Fallback: assign remaining candidates in order
         remaining = [d for d in candidates if d not in (keys_dev, mouse_dev, analog_dev)]
         if not keys_dev and remaining:   keys_dev   = remaining.pop(0)
         if not mouse_dev and remaining:  mouse_dev  = remaining.pop(0)
@@ -117,12 +105,8 @@ def find_tartarus_devices():
     return keys_dev, mouse_dev, analog_dev
 
 
-# ── Key map: built dynamically after device detection ─────────
-# Maps (device_path, keycode) -> tartarus key id
-# Populated in DaemonThread.setup_devices()
 TARTARUS_KEY_MAP = {}
 
-# Static key->id mapping by device role (filled after detection)
 KEYS_DEVICE_MAP = {
     "KEY_1":        "01", "KEY_2":        "02", "KEY_3":        "03",
     "KEY_4":        "04", "KEY_5":        "05", "KEY_TAB":      "06",
@@ -220,11 +204,41 @@ def set_active_profile_name(name):
         f.write(name)
 
 
+# ── Key selector dropdown options ───────────────────────────────
+# (Display label, value inserted into the Key/combo field)
+KEY_SELECTOR_OPTIONS = [
+    ("Escape", "esc"),
+    ("Tab", "tab"),
+    ("Enter / Return", "return"),
+    ("Backspace", "backspace"),
+    ("Delete", "delete"),
+    ("Space", "space"),
+    ("Insert", "insert"),
+    ("Home", "home"),
+    ("End", "end"),
+    ("Page Up", "pageup"),
+    ("Page Down", "pagedown"),
+    ("Up Arrow", "up"),
+    ("Down Arrow", "down"),
+    ("Left Arrow", "left"),
+    ("Right Arrow", "right"),
+    ("Caps Lock", "caps_lock"),
+    ("Num Lock", "num_lock"),
+    ("Scroll Lock", "scroll_lock"),
+    ("F1", "F1"), ("F2", "F2"), ("F3", "F3"), ("F4", "F4"),
+    ("F5", "F5"), ("F6", "F6"), ("F7", "F7"), ("F8", "F8"),
+    ("F9", "F9"), ("F10", "F10"), ("F11", "F11"), ("F12", "F12"),
+    ("Ctrl (modifier)", "ctrl"),
+    ("Shift (modifier)", "shift"),
+    ("Alt (modifier)", "alt"),
+    ("Super / Meta (modifier)", "super"),
+]
+
+
 # ── Daemon thread ──────────────────────────────────────────────
 class DaemonThread(QThread):
     status_changed = pyqtSignal(str)
 
-    # Modifier keycodes that should be held rather than tapped
     MODIFIER_CODES = {
         ecodes.KEY_LEFTCTRL, ecodes.KEY_RIGHTCTRL,
         ecodes.KEY_LEFTSHIFT, ecodes.KEY_RIGHTSHIFT,
@@ -232,7 +246,6 @@ class DaemonThread(QThread):
         ecodes.KEY_LEFTMETA, ecodes.KEY_RIGHTMETA,
     }
 
-    # Map modifier name -> evdev code
     MODIFIER_NAME_MAP = {
         "ctrl":  ecodes.KEY_LEFTCTRL,
         "shift": ecodes.KEY_LEFTSHIFT,
@@ -249,7 +262,7 @@ class DaemonThread(QThread):
         self.sel = selectors.DefaultSelector()
         self.config_mtime = 0
         self.profiles = {}
-        self.held_modifiers = set()  # tracks currently held modifier codes
+        self.held_modifiers = set()
 
     def setup_uinput(self):
         cap = {
@@ -288,7 +301,6 @@ class DaemonThread(QThread):
         for dev in [keys_dev, mouse_dev, analog_dev]:
             if dev:
                 try:
-                    # Reopen fresh to avoid stale file descriptor
                     saved_path = dev.path
                     dev.close()
                     dev = InputDevice(saved_path)
@@ -311,18 +323,11 @@ class DaemonThread(QThread):
         except Exception as e:
             self.status_changed.emit(f"Config error: {e}")
 
-    def is_modifier_key(self, assignment_key):
-        """Check if an assignment resolves to a pure modifier."""
-        parts = [p.strip().lower() for p in assignment_key.split("+")]
-        return all(p in self.MODIFIER_NAME_MAP for p in parts)
-
-    def press_combo(self, combo_str, extra_modifiers=None):
-        """Press and release a combo, including any currently held modifiers."""
+    def press_combo(self, combo_str):
         codes = parse_combo(combo_str)
         if not codes:
             return
-        # Include held modifiers that aren't already in the combo
-        held = set(extra_modifiers or self.held_modifiers)
+        held = set(self.held_modifiers)
         extra = [c for c in held if c not in codes]
         all_codes = extra + codes
         for code in all_codes:
@@ -331,7 +336,6 @@ class DaemonThread(QThread):
         for code in reversed(all_codes):
             self.ui.write(ecodes.EV_KEY, code, 0)
         self.ui.syn()
-        # Re-press held modifiers so they stay down
         for code in held:
             self.ui.write(ecodes.EV_KEY, code, 1)
         self.ui.syn()
@@ -351,12 +355,10 @@ class DaemonThread(QThread):
 
         tartarus_id = TARTARUS_KEY_MAP.get((device.path, keycode))
 
-        # ── Resolve what this key is mapped to ──
         assignment = self.mapping.get(tartarus_id, {}) if tartarus_id else {}
         mapped_key = assignment.get("key", "").strip()
         mapped_macro = assignment.get("macro", "").strip()
 
-        # Resolve the actual evdev code to emit (mapped or passthrough)
         if mapped_key:
             emit_codes = parse_combo(mapped_key)
         else:
@@ -366,10 +368,8 @@ class DaemonThread(QThread):
         if not emit_codes:
             return
 
-        # Check if this resolves to a modifier
         is_modifier = all(c in self.MODIFIER_CODES for c in emit_codes)
 
-        # ── key_up ──
         if key_event.keystate == KeyEvent.key_up:
             for code in emit_codes:
                 self.ui.write(ecodes.EV_KEY, code, 0)
@@ -378,37 +378,30 @@ class DaemonThread(QThread):
             self.ui.syn()
             return
 
-        # ── key_hold ──
         if key_event.keystate == KeyEvent.key_hold:
             if is_modifier:
-                # Modifiers just stay held, already sent on key_down
                 return
-            # For analog directions and regular held keys, send repeat
             held_extra = [c for c in self.held_modifiers if c not in emit_codes]
             for code in held_extra + emit_codes:
                 self.ui.write(ecodes.EV_KEY, code, 2)
             self.ui.syn()
             return
 
-        # ── key_down ──
         if mapped_macro:
             self.press_macro(mapped_macro)
             return
 
         if is_modifier:
-            # Hold modifier down — don't release until key_up
             for code in emit_codes:
                 self.held_modifiers.add(code)
                 self.ui.write(ecodes.EV_KEY, code, 1)
             self.ui.syn()
         elif tartarus_id and tartarus_id.startswith("analog_"):
-            # Analog: press down with held modifiers, hold/up handled above
             held_extra = [c for c in self.held_modifiers if c not in emit_codes]
             for code in held_extra + emit_codes:
                 self.ui.write(ecodes.EV_KEY, code, 1)
             self.ui.syn()
         else:
-            # Regular key: press with held modifiers, then release
             held_extra = [c for c in self.held_modifiers if c not in emit_codes]
             all_codes = held_extra + emit_codes
             for code in all_codes:
@@ -417,7 +410,6 @@ class DaemonThread(QThread):
             for code in reversed(all_codes):
                 self.ui.write(ecodes.EV_KEY, code, 0)
             self.ui.syn()
-            # Re-press held modifiers so they stay down
             for code in self.held_modifiers:
                 self.ui.write(ecodes.EV_KEY, code, 1)
             self.ui.syn()
@@ -462,7 +454,6 @@ class DaemonThread(QThread):
 
 # ── Tray icon helper ───────────────────────────────────────────
 def make_tray_icon(color="#00FF00"):
-    """Generate a simple colored circle as tray icon."""
     px = QPixmap(22, 22)
     px.fill(Qt.GlobalColor.transparent)
     painter = QPainter(px)
@@ -542,7 +533,7 @@ class TartarusWindow(QMainWindow):
         super().__init__()
         self.daemon = daemon
         self.setWindowTitle("Tartarus Pro Manager")
-        self.setMinimumSize(760, 640)
+        self.setMinimumSize(760, 660)
         self.profiles = load_profiles()
         self.current_profile = get_active_profile_name(self.profiles)
         self.selected_key = None
@@ -558,7 +549,6 @@ class TartarusWindow(QMainWindow):
         QApplication.instance().installEventFilter(self.key_filter)
 
     def closeEvent(self, event):
-        # Hide to tray instead of closing
         event.ignore()
         self.hide()
 
@@ -634,6 +624,7 @@ class TartarusWindow(QMainWindow):
             QLineEdit { background:#2a2a2a; border:1px solid #444; border-radius:6px; padding:6px 10px; color:#ddd; }
             QLineEdit:focus { border-color:#7F77DD; }
             QComboBox { background:#2a2a2a; border:1px solid #444; border-radius:6px; padding:6px 10px; color:#ddd; }
+            QComboBox QAbstractItemView { background:#2a2a2a; color:#ddd; selection-background-color:#3a3060; }
             QPushButton#primary { background:#3a3060; color:#b09fff; border:1px solid #7F77DD; border-radius:6px; padding:8px 16px; }
             QPushButton#primary:hover { background:#4a40a0; }
             QPushButton#saveall { background:#1a3a1a; color:#80ff80; border:1px solid #44aa44; border-radius:6px; padding:8px 16px; }
@@ -646,7 +637,6 @@ class TartarusWindow(QMainWindow):
             QSlider::sub-page:horizontal { background:#7F77DD; border-radius:2px; }
         """)
 
-        # Profile bar
         pbar = QHBoxLayout()
         pl = QLabel("Profile:"); pl.setStyleSheet("color:#888;font-size:13px;")
         self.profile_combo = QComboBox()
@@ -667,7 +657,6 @@ class TartarusWindow(QMainWindow):
         tabs = QTabWidget()
         main_layout.addWidget(tabs)
 
-        # ── Remap tab ──
         rw = QWidget(); rl = QVBoxLayout(rw); rl.setSpacing(12)
         dg = QGroupBox("Keypad layout — click a key to remap it")
         dl = QHBoxLayout(dg); dl.setSpacing(8); dl.setAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -698,14 +687,11 @@ class TartarusWindow(QMainWindow):
         sc.addWidget(mk("20","20")); dl.addLayout(sc)
         rl.addWidget(dg)
 
-        # Assignment panel
-        from PyQt6.QtWidgets import QStackedWidget
         self.assign_group = QGroupBox("Select a key to remap it")
         al = QVBoxLayout(self.assign_group)
 
         self.assign_stack = QStackedWidget()
 
-        # ── Page 0: normal key panel ──
         normal_page = QWidget()
         npl = QVBoxLayout(normal_page)
         npl.setContentsMargins(0,0,0,0)
@@ -720,14 +706,27 @@ class TartarusWindow(QMainWindow):
         npl.addLayout(r1)
         self.record_hint = QLabel("Press Record then hit a key or combo on your keyboard")
         self.record_hint.setStyleSheet("color:#666;font-size:11px;"); npl.addWidget(self.record_hint)
+
+        # ── Key selector dropdown (for keys that can't be recorded, e.g. Escape) ──
+        r1b = QHBoxLayout()
+        ksl = QLabel("Or pick a key:"); ksl.setStyleSheet("color:#888;font-size:13px;")
+        self.key_selector = QComboBox()
+        self.key_selector.addItem("Select a key…", "")
+        for label, value in KEY_SELECTOR_OPTIONS:
+            self.key_selector.addItem(label, value)
+        self.key_selector.currentIndexChanged.connect(self.on_key_selector_changed)
+        r1b.addWidget(ksl); r1b.addWidget(self.key_selector)
+        npl.addLayout(r1b)
+        ks_hint = QLabel("Use this for keys that are hard to record directly, like Escape")
+        ks_hint.setStyleSheet("color:#666;font-size:11px;"); npl.addWidget(ks_hint)
+
         r2 = QHBoxLayout()
         ml = QLabel("Macro:"); ml.setStyleSheet("color:#888;font-size:13px;")
         self.macro_input = QLineEdit(); self.macro_input.setPlaceholderText("e.g. ctrl+a ctrl+c ctrl+v")
         self.macro_input.textChanged.connect(self.auto_stage)
         r2.addWidget(ml); r2.addWidget(self.macro_input); npl.addLayout(r2)
-        self.assign_stack.addWidget(normal_page)  # index 0
+        self.assign_stack.addWidget(normal_page)
 
-        # ── Page 1: analog directions panel ──
         analog_page = QWidget()
         apl = QVBoxLayout(analog_page)
         apl.setContentsMargins(0,0,0,0)
@@ -743,11 +742,10 @@ class TartarusWindow(QMainWindow):
             row.addWidget(lbl); row.addWidget(inp)
             apl.addLayout(row)
             self.analog_inputs[dir_id] = inp
-        self.assign_stack.addWidget(analog_page)  # index 1
+        self.assign_stack.addWidget(analog_page)
 
         al.addWidget(self.assign_stack)
 
-        # Shared buttons row
         cb = QPushButton("Clear"); cb.setFixedWidth(80)
         cb.setStyleSheet("background:#2a2a2a;border:1px solid #444;border-radius:6px;padding:8px 12px;color:#888;")
         cb.clicked.connect(self.clear_assignment)
@@ -760,7 +758,6 @@ class TartarusWindow(QMainWindow):
         rl.addWidget(self.assign_group)
         tabs.addTab(rw, "Remap")
 
-        # ── Lighting tab ──
         lw = QWidget(); ll = QVBoxLayout(lw); ll.setSpacing(12)
         eg = QGroupBox("Effect"); el = QGridLayout(eg); self.effect_buttons = {}
         efx = [("Static","static"),("Spectrum","spectrum"),("Breath","breath_single"),
@@ -794,7 +791,6 @@ class TartarusWindow(QMainWindow):
         ll.addWidget(apb); ll.addStretch()
         tabs.addTab(lw, "Lighting")
 
-        # ── Settings tab ──
         sw2 = QWidget(); sl2 = QVBoxLayout(sw2); sl2.setSpacing(12)
         sg = QGroupBox("Startup"); sgl = QVBoxLayout(sg)
         self.autostart_btn = QPushButton()
@@ -811,6 +807,15 @@ class TartarusWindow(QMainWindow):
         sl2.addWidget(dg2)
         sl2.addStretch()
         tabs.addTab(sw2, "Settings")
+
+    # ── Key selector handler ──
+    def on_key_selector_changed(self, idx):
+        value = self.key_selector.itemData(idx)
+        if value:
+            self.key_input.setText(value)
+        self.key_selector.blockSignals(True)
+        self.key_selector.setCurrentIndex(0)
+        self.key_selector.blockSignals(False)
 
     # ── Auto stage ────────────────────────────────────────────────
     def auto_stage(self):
@@ -843,7 +848,6 @@ class TartarusWindow(QMainWindow):
         self.stop_recording()
 
         if key_id == "analog":
-            # Show analog directions panel
             self.assign_stack.setCurrentIndex(1)
             self.assign_group.setTitle("Analog stick directions")
             keys = self.profiles[self.current_profile]["keys"]
@@ -856,7 +860,6 @@ class TartarusWindow(QMainWindow):
                     inp.setText(keys.get(dir_id, {}).get("key",""))
                 inp.blockSignals(False)
         else:
-            # Show normal key panel
             self.assign_stack.setCurrentIndex(0)
             self.key_input.blockSignals(True); self.macro_input.blockSignals(True)
             staged = self.pending_changes.get(key_id)
@@ -974,7 +977,7 @@ class TartarusWindow(QMainWindow):
 
     def apply_lighting(self):
         if not self.tartarus_device:
-            QMessageBox.warning(self, "No device", "Tartarus Pro not connected via OpenRazer.")
+            QMessageBox.warning(self, "No device", "Tartarus not connected via OpenRazer.")
             return
         lighting = self.profiles[self.current_profile].get("lighting", {})
         effect = lighting.get("effect", "spectrum")
@@ -997,7 +1000,6 @@ class TartarusWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
 
-    # ── Autostart ─────────────────────────────────────────────────
     def is_autostart_enabled(self):
         return os.path.exists(AUTOSTART_FILE)
 
@@ -1016,15 +1018,16 @@ class TartarusWindow(QMainWindow):
             script_path = os.path.abspath(sys.argv[0])
             desktop = f"""[Desktop Entry]
 Type=Application
-Name=Tartarus Pro Manager
-Exec=bash -c 'sudo python3 {script_path}'
+Name=OpenTartarus
+Exec=python3 {script_path}
 Hidden=false
 NoDisplay=false
 X-GNOME-Autostart-enabled=true
+X-KDE-Autostart-enabled=true
 """
             with open(AUTOSTART_FILE, "w") as f:
                 f.write(desktop)
-            QMessageBox.information(self, "Autostart", f"Will launch on login.\nScript: {script_path}")
+            QMessageBox.information(self, "Autostart", "OpenTartarus will launch on login.")
         self.update_autostart_btn()
 
 
@@ -1035,15 +1038,12 @@ class TartarusApp:
         self.app.setQuitOnLastWindowClosed(False)
         self.app.setStyle("Fusion")
 
-        # Start daemon thread
         self.daemon = DaemonThread()
         self.daemon.status_changed.connect(self.on_daemon_status)
         self.daemon.start()
 
-        # Main window
         self.window = TartarusWindow(self.daemon)
 
-        # Tray icon
         self.tray = QSystemTrayIcon()
         self.tray.setIcon(make_tray_icon("#00CC00"))
         self.tray.setToolTip("Tartarus Pro Manager")
@@ -1054,7 +1054,6 @@ class TartarusApp:
         open_action.triggered.connect(self.show_window)
         menu.addSeparator()
 
-        # Profile switcher submenu
         self.profile_menu = menu.addMenu("🎮 Switch profile")
         self.rebuild_profile_menu()
         menu.addSeparator()
